@@ -1,6 +1,7 @@
 import streamlit as st
-from streamlit_echarts import st_echarts, dict_to_json
+from streamlit_echarts import st_echarts
 import pandas as pd
+import json
 
 st.set_page_config(page_title="대물 낚시 수첩", layout="centered")
 
@@ -24,12 +25,12 @@ if 'selected_region' not in st.session_state:
 if st.session_state.selected_region == "전국":
     st.subheader("탐색할 지역을 직접 터치하세요.")
 
-    # 지도 데이터 (SouthKorea라는 이름으로 등록될 데이터)
+    # 지도 설정
     options = {
         "tooltip": {"trigger": "item", "formatter": "{b}"},
         "series": [{
             "type": "map",
-            "map": "SouthKorea", # register_map으로 등록할 이름과 일치해야 함
+            "map": "SouthKorea",
             "label": {"show": True, "fontSize": 10},
             "itemStyle": {"areaColor": "#fdfdfd", "borderColor": "#333"},
             "emphasis": {
@@ -47,10 +48,8 @@ if st.session_state.selected_region == "전국":
         }]
     }
 
-    # 지도를 표시하는 가장 안전한 방법 (JsCode 사용 대신 기본 기능 활용)
-    # 에러가 났던 map_js_url을 제거하고 기본 맵 컴포넌트 호출
     try:
-        # map_js_url 대신 라이브러리에서 권장하는 방식으로 지도 데이터 호출
+        # map_js_url을 사용해 지도를 불러옵니다.
         clicked = st_echarts(
             options=options,
             map_js_url="https://raw.githubusercontent.com/apache/echarts/master/test/data/map/json/south_korea.json",
@@ -59,17 +58,15 @@ if st.session_state.selected_region == "전국":
         )
 
         if clicked:
-            # 클릭 데이터 처리
+            # 클릭 결과가 문자열인지 딕셔너리인지 체크하여 처리
             res = clicked if isinstance(clicked, str) else clicked.get('name')
             if res:
                 st.session_state.selected_region = res
                 st.rerun()
     except Exception as e:
-        # 지도가 안 뜰 경우를 대비한 비상용 버튼 메뉴
-        st.warning("지도 로딩 중입니다... 아래 버튼으로도 지역 선택이 가능합니다.")
+        st.warning("지도를 불러오는 중입니다... 아래 버튼을 클릭하셔도 됩니다.")
         cols = st.columns(3)
-        regions = ["경기", "강원", "충남", "전남", "경남", "제주"]
-        for i, r in enumerate(regions):
+        for i, r in enumerate(["경기", "강원", "충남", "전남", "경남", "제주"]):
             if cols[i % 3].button(r, use_container_width=True):
                 st.session_state.selected_region = r
                 st.rerun()
@@ -91,13 +88,17 @@ else:
     
     if not points_df.empty:
         short_name = st.session_state.selected_region[:2]
-        local_points = points_df[points_df['지역'].str.contains(short_name)]
-        if not local_points.empty:
-            st.subheader(f"🏠 등록된 {st.session_state.selected_region} 포인트")
-            for _, p_row in local_points.iterrows():
-                st.info(f"📍 {p_row['포인트명']}")
+        # '지역' 컬럼이 있는 경우에만 필터링
+        if '지역' in points_df.columns:
+            local_points = points_df[points_df['지역'].str.contains(short_name, na=False)]
+            if not local_points.empty:
+                st.subheader(f"🏠 등록된 {st.session_state.selected_region} 포인트")
+                for _, p_row in local_points.iterrows():
+                    st.info(f"📍 {p_row['포인트명']}")
+            else:
+                st.write("등록된 포인트가 없습니다.")
         else:
-            st.write("등록된 포인트가 없습니다.")
+            st.write("포인트 데이터 형식이 올바르지 않습니다.")
     else:
         st.info("'설정' 페이지에서 포인트를 먼저 등록해주세요.")
 
