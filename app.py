@@ -3,61 +3,88 @@ import pandas as pd
 import datetime
 
 # 페이지 설정
-st.set_page_config(page_title="대물 수첩", layout="centered")
+st.set_page_config(page_title="대물 수첩", layout="wide")
 
-# --- 데이터 관리 (초간결) ---
+# --- 스타일 설정 (백지도 느낌) ---
+st.markdown("""
+    <style>
+    .region-btn {
+        display: inline-block;
+        width: 100px;
+        height: 60px;
+        line-height: 60px;
+        margin: 5px;
+        text-align: center;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background-color: #f9f9f9;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    .region-btn:hover { background-color: #e2e2e2; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 데이터 관리 ---
 DATA_FILE = "fishing_data.csv"
 
 def load_data():
-    try:
-        df = pd.read_csv(DATA_FILE)
-        # 위도/경도 데이터가 숫자인지 확인
-        df['lat'] = pd.to_numeric(df['위도'], errors='coerce')
-        df['lon'] = pd.to_numeric(df['경도'], errors='coerce')
-        return df.dropna(subset=['lat', 'lon'])
-    except:
-        return pd.DataFrame(columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "lat", "lon"])
+    try: return pd.read_csv(DATA_FILE)
+    except: return pd.DataFrame(columns=["날짜", "어종", "크기", "포인트명", "시도", "상세지역"])
 
-# --- 앱 메인 ---
-st.title("🎣 초스피드 낚시수첩")
+# --- 메인 로직 ---
+st.title("🗺️ 낚시 포인트 스마트 탐색")
 
-# 메뉴를 상단 라디오 버튼으로 변경 (사이드바보다 빠름)
-menu = st.radio("메뉴", ["📍 지도보기", "📝 기록하기", "📜 목록"], horizontal=True)
+if 'view_level' not in st.session_state:
+    st.session_state.view_level = 'national' # national -> city -> town
+if 'selected_sido' not in st.session_state:
+    st.session_state.selected_sido = None
 
-df = load_data()
+menu = st.sidebar.radio("메뉴", ["지도 탐색", "조과 기록", "전체 기록"])
 
-if menu == "📍 지도보기":
-    st.subheader("내 포인트 분포")
-    if not df.empty:
-        # Streamlit 내장 지도는 Folium보다 압도적으로 빠릅니다.
-        # 한국 중심 좌표로 자동 포커싱됩니다.
-        st.map(df, latitude='lat', longitude='lon', size=20, color='#ff4b4b')
-    else:
-        st.info("기록된 포인트가 없습니다. 먼저 기록해주세요!")
-        # 데이터가 없을 땐 기본 한국 지도
-        st.map(pd.DataFrame({'lat': [36.5], 'lon': [127.5]}))
+if menu == "지도 탐색":
+    # 1단계: 전국 백지도 (시/도 선택)
+    if st.session_state.view_level == 'national':
+        st.subheader("대한민국 전도 (시/도를 선택하세요)")
+        # 실제 지도를 그리는 대신, 클릭 가능한 구역을 배치합니다. (로딩 0초)
+        sidos = ["서울", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"]
+        cols = st.columns(5)
+        for i, sido in enumerate(sidos):
+            if cols[i % 5].button(sido, use_container_width=True):
+                st.session_state.selected_sido = sido
+                st.session_state.view_level = 'city'
+                st.rerun()
 
-elif menu == "📝 기록하기":
-    with st.form("fast_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            fish = st.text_input("어종")
-            size = st.number_input("크기(cm)", value=0.0)
-        with col2:
-            lat = st.number_input("위도", value=36.5000, format="%.4f")
-            lon = st.number_input("경도", value=127.5000, format="%.4f")
-        
-        point_name = st.text_input("포인트 별명")
-        submitted = st.form_submit_button("번개 저장 ⚡")
-        
-        if submitted:
-            new_data = pd.DataFrame([[datetime.date.today(), fish, size, point_name, lat, lon, lat, lon]], 
-                                     columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "lat", "lon"])
-            df = pd.concat([df, new_data], ignore_index=True)
-            df.to_csv(DATA_FILE, index=False)
-            st.success("저장되었습니다!")
+    # 2단계: 시/군/구 선택 (예: 경기도 클릭 시)
+    elif st.session_state.view_level == 'city':
+        st.subheader(f"📍 {st.session_state.selected_sido} 상세 지역")
+        if st.button("⬅️ 뒤로가기"):
+            st.session_state.view_level = 'national'
             st.rerun()
+            
+        # 선택한 시도에 따른 구/군 리스트 (여기선 예시로 몇 개만 넣습니다)
+        if st.session_state.selected_sido == "경기":
+            cities = ["수원시", "화성시", "평택시", "안산시", "김포시"]
+        elif st.session_state.selected_sido == "강원":
+            cities = ["춘천시", "강릉시", "속초시", "삼척시"]
+        else:
+            cities = ["상세 구역 데이터 준비 중..."]
+            
+        cols = st.columns(4)
+        for i, city in enumerate(cities):
+            if cols[i % 4].button(city, use_container_width=True):
+                st.info(f"{city}의 '동/리' 단위 지도로 이동합니다 (데이터 연결 필요)")
+
+elif menu == "조과 기록":
+    st.subheader("📝 기록하기")
+    with st.form("input"):
+        sido = st.selectbox("지역(시/도)", ["서울", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"])
+        fish = st.text_input("어종")
+        size = st.number_input("크기(cm)")
+        submit = st.form_submit_button("저장")
+        if submit:
+            # 저장 로직 (생략)
+            st.success("저장되었습니다!")
 
 else:
-    st.subheader("전체 기록")
-    st.dataframe(df[["날짜", "어종", "크기", "포인트명"]], use_container_width=True)
+    st.write(load_data())
