@@ -5,55 +5,62 @@ from streamlit_folium import st_folium
 import requests
 import datetime
 
-# 기본 설정
+# 앱 설정: 페이지를 넓게 쓰고 제목 설정
 st.set_page_config(page_title="대물 낚시 수첩", layout="wide")
 
-# --- 데이터 로드 및 저장 함수 ---
+# --- 데이터 로드 함수 ---
 DATA_FILE = "fishing_data.csv"
 
 def load_data():
     try:
         return pd.read_csv(DATA_FILE)
     except:
+        # 데이터 파일이 없으면 빈 표 생성
         return pd.DataFrame(columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "시도"])
 
-# --- 한국 시도 경계 데이터 (무료 공개 JSON) ---
-KOREA_SIDO_URL = "https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_provinces_geo.json"
+# --- 캐싱(Caching) 사용: 지도 데이터를 한 번만 불러오도록 설정 (로딩 속도 핵심) ---
+@st.cache_data
+def get_korea_geo():
+    url = "https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_provinces_geo.json"
+    return requests.get(url).json()
 
-# --- 메인 로직 ---
-st.title("🎣 낚시 조과 & 스마트 포인트 앱")
+# --- 메인 화면 ---
+st.title("🎣 낚시 조과 & 스마트 포인트")
 
-menu = st.sidebar.selectbox("메뉴 선택", ["전체지도 탐색", "조과 기록하기", "나의 기록 히스토리"])
+menu = st.sidebar.selectbox("메뉴 선택", ["전체지도 탐색", "조과 기록하기", "나의 기록 보기"])
 
-# 1. 전체지도 탐색 (드릴 다운 기초)
 if menu == "전체지도 탐색":
-    st.header("🗺️ 대한민국 지역별 포인트")
-    st.info("지도의 시도 지역을 클릭하면 해당 지역으로 집중합니다.")
+    st.subheader("🗺️ 대한민국 지역별 포인트")
+    
+    # 1. 지도 초기 설정: 한국 중심(36.5, 127.5), 줌 레벨(7) 고정
+    # min_zoom과 max_zoom을 설정해 세계지도로 나가는 것을 방지
+    m = folium.Map(
+        location=[36.5, 127.5], 
+        zoom_start=7, 
+        min_zoom=7, 
+        max_zoom=14,
+        tiles="cartodbpositron" # 가볍고 깨끗한 백지도 스타일
+    )
 
-    # 지도 생성
-    m = folium.Map(location=[36.5, 127.5], zoom_start=7, tiles="cartodbpositron")
-
-    # 시도 경계 레이어 추가
+    # 2. 지도 경계선 추가 (캐싱된 데이터 사용)
     try:
-        response = requests.get(KOREA_SIDO_URL)
-        sido_geo = response.json()
-        
+        sido_geo = get_korea_geo()
         folium.GeoJson(
             sido_geo,
             name="korea_sido",
             style_function=lambda x: {
-                'fillColor': '#f9f9f9',
-                'color': '#333333',
-                'weight': 1,
-                'fillOpacity': 0.4,
+                'fillColor': '#f8f9fa',
+                'color': '#444444',
+                'weight': 1.5,
+                'fillOpacity': 0.3,
             },
-            highlight_function=lambda x: {'weight': 3, 'fillColor': '#318ce7', 'fillOpacity': 0.6},
-            tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['지역명:'])
+            highlight_function=lambda x: {'weight': 3, 'fillColor': '#318ce7', 'fillOpacity': 0.5},
+            tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['지역:'])
         ).add_to(m)
     except:
-        st.error("지도 데이터를 불러오지 못했습니다.")
+        st.warning("지도 경계 데이터를 불러오는 중입니다...")
 
-    # 기존 저장된 포인트들 지도에 표시
+    # 3. 저장된 낚시 포인트 표시
     df = load_data()
     for _, row in df.iterrows():
         folium.Marker(
@@ -62,20 +69,19 @@ if menu == "전체지도 탐색":
             icon=folium.Icon(color="blue", icon="fish", prefix="fa")
         ).add_to(m)
 
-    # 지도 화면 출력 및 클릭 감지
-    map_data = st_folium(m, width="100%", height=600)
+    # 4. 지도 출력 (가로 100% 꽉 차게)
+    map_data = st_folium(m, width="100%", height=500)
 
-    # 클릭 시 동작
+    # 클릭 이벤트 처리
     if map_data['last_active_drawing']:
-        selected_name = map_data['last_active_drawing']['properties']['name']
-        st.subheader(f"📍 {selected_name} 지역 상세 보기")
-        st.write(f"현재 {selected_name} 지역의 포인트들을 필터링 중입니다...")
-        # 여기서 하위 행정구역(시군구) GeoJSON을 연결하면 다음 단계로 넘어갑니다.
+        region_name = map_data['last_active_drawing']['properties']['name']
+        st.info(f"선택하신 지역: **{region_name}**")
+        st.write(f"현재 {region_name} 근처의 낚시 기록들을 불러오고 있습니다.")
 
-# 2. 조과 기록하기
 elif menu == "조과 기록하기":
-    st.header("📝 오늘의 조과 남기기")
-    with st.form("input_form"):
+    st.subheader("📝 오늘의 조과 남기기")
+    # (이전 기록 코드와 동일)
+    with st.form("fishing_form"):
         col1, col2 = st.columns(2)
         with col1:
             date = st.date_input("날짜", datetime.date.today())
@@ -86,19 +92,15 @@ elif menu == "조과 기록하기":
             lat = st.number_input("위도", format="%.6f", value=36.5)
             lon = st.number_input("경도", format="%.6f", value=127.5)
         
-        memo = st.text_area("메모")
         submitted = st.form_submit_button("저장하기")
-        
         if submitted:
             new_data = pd.DataFrame([[date, fish, size, point_name, lat, lon, "미분류"]], 
                                      columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "시도"])
             df = load_data()
             df = pd.concat([df, new_data], ignore_index=True)
             df.to_csv(DATA_FILE, index=False)
-            st.success("저장 완료!")
+            st.success("기록 완료!")
 
-# 3. 기록 히스토리
-elif menu == "나의 기록 히스토리":
-    st.header("📜 저장된 모든 기록")
-    df = load_data()
-    st.dataframe(df, use_container_width=True)
+else:
+    st.subheader("📜 나의 기록 보기")
+    st.dataframe(load_data(), use_container_width=True)
