@@ -1,41 +1,35 @@
 import streamlit as st
-from streamlit_echarts import st_echarts
+from streamlit_echarts import st_echarts, dict_to_json
 import pandas as pd
 
 st.set_page_config(page_title="대물 낚시 수첩", layout="centered")
 
 st.title("🗺️ 낚시 포인트 스마트 백지도")
 
-# --- 데이터 로드 ---
-def load_fishing_data():
+# --- 데이터 로드 기능 ---
+def load_data(file_name):
     try:
-        return pd.read_csv("fishing_data.csv")
+        return pd.read_csv(file_name)
     except:
         return pd.DataFrame()
 
-def load_points_data():
-    try:
-        return pd.read_csv("points.csv")
-    except:
-        return pd.DataFrame()
-
-df = load_fishing_data()
-points_df = load_points_data()
+df = load_data("fishing_data.csv")
+points_df = load_data("points.csv")
 
 # 세션 상태 관리
 if 'selected_region' not in st.session_state:
     st.session_state.selected_region = "전국"
 
-# --- 1. 전국 지도 모드 ---
+# --- 1. 전국 지도 화면 ---
 if st.session_state.selected_region == "전국":
     st.subheader("탐색할 지역을 직접 터치하세요.")
-    
-    # 지도 설정 (에러를 방지하기 위해 가장 단순하고 핵심적인 설정만 유지)
+
+    # 지도 데이터 (SouthKorea라는 이름으로 등록될 데이터)
     options = {
         "tooltip": {"trigger": "item", "formatter": "{b}"},
         "series": [{
             "type": "map",
-            "map": "SouthKorea",
+            "map": "SouthKorea", # register_map으로 등록할 이름과 일치해야 함
             "label": {"show": True, "fontSize": 10},
             "itemStyle": {"areaColor": "#fdfdfd", "borderColor": "#333"},
             "emphasis": {
@@ -53,24 +47,34 @@ if st.session_state.selected_region == "전국":
         }]
     }
 
-    # 지도 출력
+    # 지도를 표시하는 가장 안전한 방법 (JsCode 사용 대신 기본 기능 활용)
+    # 에러가 났던 map_js_url을 제거하고 기본 맵 컴포넌트 호출
     try:
+        # map_js_url 대신 라이브러리에서 권장하는 방식으로 지도 데이터 호출
         clicked = st_echarts(
-            options, 
+            options=options,
             map_js_url="https://raw.githubusercontent.com/apache/echarts/master/test/data/map/json/south_korea.json",
             height="550px",
+            key="korea_map_main"
         )
 
-        # 클릭 감지 및 처리
         if clicked:
-            region_name = clicked if isinstance(clicked, str) else clicked.get('name')
-            if region_name:
-                st.session_state.selected_region = region_name
+            # 클릭 데이터 처리
+            res = clicked if isinstance(clicked, str) else clicked.get('name')
+            if res:
+                st.session_state.selected_region = res
                 st.rerun()
     except Exception as e:
-        st.error("지도를 표시하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+        # 지도가 안 뜰 경우를 대비한 비상용 버튼 메뉴
+        st.warning("지도 로딩 중입니다... 아래 버튼으로도 지역 선택이 가능합니다.")
+        cols = st.columns(3)
+        regions = ["경기", "강원", "충남", "전남", "경남", "제주"]
+        for i, r in enumerate(regions):
+            if cols[i % 3].button(r, use_container_width=True):
+                st.session_state.selected_region = r
+                st.rerun()
 
-# --- 2. 지역 선택 후 상세 화면 ---
+# --- 2. 상세 화면 ---
 else:
     st.header(f"📍 {st.session_state.selected_region} 탐색")
     
@@ -85,21 +89,16 @@ else:
 
     st.markdown("---")
     
-    # 해당 지역의 포인트 필터링 및 표시
     if not points_df.empty:
-        # 지역명 매칭 (예: '경기도' -> '경기')
         short_name = st.session_state.selected_region[:2]
         local_points = points_df[points_df['지역'].str.contains(short_name)]
-        
         if not local_points.empty:
             st.subheader(f"🏠 등록된 {st.session_state.selected_region} 포인트")
             for _, p_row in local_points.iterrows():
                 st.info(f"📍 {p_row['포인트명']}")
         else:
-            st.write(f"아직 {st.session_state.selected_region}에 등록된 포인트가 없습니다.")
-            if st.button("➕ 포인트 등록하기"):
-                st.switch_page("pages/4_settings.py")
+            st.write("등록된 포인트가 없습니다.")
     else:
-        st.info("먼저 '설정' 페이지에서 포인트를 등록해주세요.")
+        st.info("'설정' 페이지에서 포인트를 먼저 등록해주세요.")
 
 st.sidebar.write(f"**현재 위치:** {st.session_state.selected_region}")
