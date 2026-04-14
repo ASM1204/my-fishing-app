@@ -1,71 +1,104 @@
 import streamlit as st
 import pandas as pd
-import datetime
 import folium
 from streamlit_folium import st_folium
+import requests
+import datetime
 
-# 앱 제목 및 설정
+# 기본 설정
 st.set_page_config(page_title="대물 낚시 수첩", layout="wide")
-st.title("🎣 나만의 비밀 조과 & 포인트 기록")
 
-# 데이터 저장 (간이로 파일 저장 방식 - 더 안전하게는 구글 시트 연결 가능)
+# --- 데이터 로드 및 저장 함수 ---
 DATA_FILE = "fishing_data.csv"
 
 def load_data():
     try:
         return pd.read_csv(DATA_FILE)
-    except FileNotFoundError:
-        return pd.DataFrame(columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "메모"])
+    except:
+        return pd.DataFrame(columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "시도"])
 
-# 사이드바 메뉴
-menu = st.sidebar.selectbox("메뉴", ["조과 기록하기", "나의 기록 & 지도"])
+# --- 한국 시도 경계 데이터 (무료 공개 JSON) ---
+KOREA_SIDO_URL = "https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_provinces_geo.json"
 
-if menu == "조과 기록하기":
-    st.header("📸 오늘의 조과 기록")
-    
-    with st.form("fishing_form"):
+# --- 메인 로직 ---
+st.title("🎣 낚시 조과 & 스마트 포인트 앱")
+
+menu = st.sidebar.selectbox("메뉴 선택", ["전체지도 탐색", "조과 기록하기", "나의 기록 히스토리"])
+
+# 1. 전체지도 탐색 (드릴 다운 기초)
+if menu == "전체지도 탐색":
+    st.header("🗺️ 대한민국 지역별 포인트")
+    st.info("지도의 시도 지역을 클릭하면 해당 지역으로 집중합니다.")
+
+    # 지도 생성
+    m = folium.Map(location=[36.5, 127.5], zoom_start=7, tiles="cartodbpositron")
+
+    # 시도 경계 레이어 추가
+    try:
+        response = requests.get(KOREA_SIDO_URL)
+        sido_geo = response.json()
+        
+        folium.GeoJson(
+            sido_geo,
+            name="korea_sido",
+            style_function=lambda x: {
+                'fillColor': '#f9f9f9',
+                'color': '#333333',
+                'weight': 1,
+                'fillOpacity': 0.4,
+            },
+            highlight_function=lambda x: {'weight': 3, 'fillColor': '#318ce7', 'fillOpacity': 0.6},
+            tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['지역명:'])
+        ).add_to(m)
+    except:
+        st.error("지도 데이터를 불러오지 못했습니다.")
+
+    # 기존 저장된 포인트들 지도에 표시
+    df = load_data()
+    for _, row in df.iterrows():
+        folium.Marker(
+            [row['위도'], row['경도']],
+            popup=f"{row['어종']} ({row['크기']}cm)",
+            icon=folium.Icon(color="blue", icon="fish", prefix="fa")
+        ).add_to(m)
+
+    # 지도 화면 출력 및 클릭 감지
+    map_data = st_folium(m, width="100%", height=600)
+
+    # 클릭 시 동작
+    if map_data['last_active_drawing']:
+        selected_name = map_data['last_active_drawing']['properties']['name']
+        st.subheader(f"📍 {selected_name} 지역 상세 보기")
+        st.write(f"현재 {selected_name} 지역의 포인트들을 필터링 중입니다...")
+        # 여기서 하위 행정구역(시군구) GeoJSON을 연결하면 다음 단계로 넘어갑니다.
+
+# 2. 조과 기록하기
+elif menu == "조과 기록하기":
+    st.header("📝 오늘의 조과 남기기")
+    with st.form("input_form"):
         col1, col2 = st.columns(2)
         with col1:
             date = st.date_input("날짜", datetime.date.today())
-            fish_type = st.text_input("어종", placeholder="예: 감성돔")
-            size = st.number_input("크기 (cm)", min_value=0.0, step=0.1)
+            fish = st.text_input("어종")
+            size = st.number_input("크기(cm)", min_value=0.0)
         with col2:
-            loc_name = st.text_input("포인트명")
-            lat = st.number_input("위도 (Latitude)", format="%.6f", value=37.5665)
-            lon = st.number_input("경도 (Longitude)", format="%.6f", value=126.9780)
+            point_name = st.text_input("포인트 별명")
+            lat = st.number_input("위도", format="%.6f", value=36.5)
+            lon = st.number_input("경도", format="%.6f", value=127.5)
         
-        uploaded_file = st.file_uploader("물고기 사진 업로드", type=['jpg', 'png', 'jpeg'])
-        memo = st.text_area("출조 메모 (날씨, 채비 등)")
-        
-        submitted = st.form_submit_button("기록 저장하기")
+        memo = st.text_area("메모")
+        submitted = st.form_submit_button("저장하기")
         
         if submitted:
-            # 데이터 저장 로직
-            new_entry = pd.DataFrame([[date, fish_type, size, loc_name, lat, lon, memo]], 
-                                     columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "메모"])
+            new_data = pd.DataFrame([[date, fish, size, point_name, lat, lon, "미분류"]], 
+                                     columns=["날짜", "어종", "크기", "포인트명", "위도", "경도", "시도"])
             df = load_data()
-            df = pd.concat([df, new_entry], ignore_index=True)
+            df = pd.concat([df, new_data], ignore_index=True)
             df.to_csv(DATA_FILE, index=False)
-            st.success("기록이 저장되었습니다!")
+            st.success("저장 완료!")
 
-elif menu == "나의 기록 & 지도":
-    st.header("📜 나의 출조 히스토리")
+# 3. 기록 히스토리
+elif menu == "나의 기록 히스토리":
+    st.header("📜 저장된 모든 기록")
     df = load_data()
-    
-    if not df.empty:
-        # 지도 표시
-        st.subheader("📍 포인트 지도")
-        m = folium.Map(location=[df['위도'].mean(), df['경도'].mean()], zoom_start=10)
-        for i, row in df.iterrows():
-            folium.Marker(
-                [row['위도'], row['경도']], 
-                popup=f"{row['어종']} ({row['크기']}cm)",
-                tooltip=row['포인트명']
-            ).add_to(m)
-        st_folium(m, width=700, height=500)
-        
-        # 표 표시
-        st.subheader("📊 상세 기록 리스트")
-        st.dataframe(df.sort_values("날짜", ascending=False))
-    else:
-        st.info("아직 기록이 없습니다.")
+    st.dataframe(df, use_container_width=True)
