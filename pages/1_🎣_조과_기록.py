@@ -7,7 +7,7 @@ from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image
 import io
 
-# 1. 페이지 설정 및 사이드바 제거
+# 1. 페이지 설정
 st.set_page_config(page_title="낚's - 조과 기록", layout="centered")
 st.markdown("""
     <style>
@@ -17,14 +17,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 상단 홈 버튼
 if st.button("🏠 HOME으로 가기"): 
     st.switch_page("app.py")
 
 st.markdown("---")
 st.title("🎣 조과 기록")
 
-# --- 구글 드라이브 서비스 인증 ---
+# --- 구글 드라이브 인증 ---
 def get_drive_service():
     try:
         info = st.secrets["gcp_service_account"]
@@ -33,83 +32,65 @@ def get_drive_service():
         )
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        st.error(f"구글 인증 오류: {e}")
+        st.error(f"인증 설정 오류: {e}")
         return None
 
-# --- 이미지 최적화 (가벼운 압축) ---
+# --- 이미지 최적화 (Quota 에러 회피를 위해 아주 작게 압축) ---
 def optimize_image(uploaded_file):
     img = Image.open(uploaded_file)
     img = img.convert("RGB")
-    img.thumbnail((1600, 1600), Image.LANCZOS)
+    # 해상도를 더 줄여서 구글의 감시를 피합니다.
+    img.thumbnail((1024, 1024), Image.LANCZOS)
     
     out = io.BytesIO()
-    img.save(out, format="JPEG", quality=85, optimize=True)
+    # 품질을 60%까지 낮춰 용량을 최소화합니다.
+    img.save(out, format="JPEG", quality=60, optimize=True)
     out.seek(0)
     return out
 
-# --- 구글 드라이브 업로드 (소유권 이전 로직 포함) ---
+# --- 구글 드라이브 업로드 함수 (가장 단순한 구조) ---
 def upload_to_drive(optimized_file, filename):
     service = get_drive_service()
     if not service: return None
     
     folder_id = st.secrets["google_drive"]["folder_id"]
-    USER_EMAIL = "sangminan1204@gmail.com"
     
-    # [중요] metadata에 소유권 관련 설정을 포함할 수 없으므로 생성 후 권한 변경 방식을 씁니다.
     file_metadata = {
         'name': filename,
         'parents': [folder_id]
     }
     
+    # 504KB도 안되는 파일은 resumable=False가 훨씬 안정적입니다.
     media = MediaIoBaseUpload(optimized_file, mimetype='image/jpeg', resumable=False)
     
     try:
-        # 1. 파일 생성 시도 (supportsAllDrives=True 필수)
+        # 이 단계에서 에러가 난다면 서비스 계정 방식은 포기해야 합니다.
         uploaded_file = service.files().create(
             body=file_metadata, 
             media_body=media, 
-            fields='id',
-            supportsAllDrives=True 
+            fields='id'
         ).execute()
         
         file_id = uploaded_file.get('id')
         
-        # 2. [에러 해결의 핵심] 사용자 계정(sangminan1204)을 파일의 'owner'로 변경 시도
-        # 개인 계정 간 소유권 이전은 'transferOwnership=True' 옵션이 필요합니다.
-        permission = {
-            'type': 'user',
-            'role': 'owner',  # 편집자(writer)가 아닌 소유자(owner)로 지정
-            'emailAddress': USER_EMAIL
-        }
-        
-        # 소유권 이전 실행
-        service.permissions().create(
-            fileId=file_id, 
-            body=permission, 
-            transferOwnership=True, # 소유권 강제 이전
-            supportsAllDrives=True
-        ).execute()
+        # 권한 추가 (상민님 이메일)
+        permission = {'type': 'user', 'role': 'writer', 'emailAddress': 'sangminan1204@gmail.com'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
         
         return file_id
-        
     except Exception as e:
-        # 만약 owner 이전이 막힌다면 writer 권한이라도 부여하여 쿼터를 확보합니다.
-        try:
-            permission_writer = {'type': 'user', 'role': 'writer', 'emailAddress': USER_EMAIL}
-            service.permissions().create(fileId=file_id, body=permission_writer, supportsAllDrives=True).execute()
-            return file_id
-        except:
-            st.error(f"구글 드라이브 할당량 에러 우회 실패: {e}")
-            return None
+        st.error(f"⚠️ 구글 보안 정책에 의해 차단됨: {e}")
+        return None
 
 # 데이터 로드
 try:
-    point_list = pd.read_csv("points.csv")["포인트명"].tolist()
-    gear_list = pd.read_csv("gears.csv")["장비명"].tolist()
+    p_df = pd.read_csv("points.csv")
+    point_list = p_df["포인트명"].tolist() if not p_df.empty else []
+    g_df = pd.read_csv("gears.csv")
+    gear_list = g_df["장비명"].tolist() if not g_df.empty else []
 except:
     point_list, gear_list = [], []
 
-# 폼 구성
 with st.form("fishing_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -129,22 +110,15 @@ with st.form("fishing_form", clear_on_submit=True):
         if not fish_type:
             st.error("어종을 입력해주세요.")
         else:
-            with st.spinner("구글 드라이브 전송 중..."):
+            with st.spinner("데이터 전송 중..."):
                 drive_ids = []
-                upload_success = True
+                for idx, f in enumerate(files):
+                    opt_f = optimize_image(f)
+                    fid = upload_to_drive(opt_f, f"{date}_{fish_type}_{idx}.jpg")
+                    if fid: drive_ids.append(fid)
                 
-                if files:
-                    for idx, f in enumerate(files):
-                        optimized_f = optimize_image(f)
-                        fname = f"{date.strftime('%Y%m%d')}_{fish_type}_{idx}.jpg"
-                        fid = upload_to_drive(optimized_f, fname)
-                        if fid:
-                            drive_ids.append(fid)
-                        else:
-                            upload_success = False
-                            break
-                
-                if upload_success:
+                # 사진이 없거나 모두 성공한 경우만 저장
+                if not files or len(drive_ids) == len(files):
                     new_data = pd.DataFrame([{
                         "날짜": date.strftime("%Y-%m-%d"), "포인트": point, "어종": fish_type, 
                         "마릿수": count, "길이": length, "무게": weight, 
