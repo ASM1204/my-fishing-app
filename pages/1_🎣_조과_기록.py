@@ -3,10 +3,12 @@ import pandas as pd
 import datetime
 import json
 import io
+import os
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from PIL import Image
 
 # 1. 페이지 설정
@@ -16,49 +18,59 @@ st.markdown("""<style>[data-testid="stSidebar"] {display: none;} [data-testid="s
 if st.button("🏠 HOME으로 가기"): 
     st.switch_page("app.py")
 
-st.title("🎣 조과 기록 (자동 로그인 유지)")
+st.title("🎣 조과 기록 (영구 로그인 모드)")
 
-# --- 자동 로그인 유지 로직 ---
+# 토큰 저장 파일 경로
+TOKEN_FILE = 'token.json'
+
+# --- 영구 로그인 인증 로직 ---
 def get_drive_service():
     client_config = json.loads(st.secrets["google_oauth"]["client_secrets_json"])
     scopes = ['https://www.googleapis.com/auth/drive.file']
-    
-    # 1. 세션에 이미 인증 정보가 있는지 확인
-    if 'credentials' in st.session_state:
-        creds = st.session_state.credentials
-        if creds.valid:
-            return build('drive', 'v3', credentials=creds)
-        # 만료되었으면 갱신 시도
-        if creds.expired and creds.refresh_token:
+    creds = None
+
+    # 1. 파일에 저장된 기존 토큰이 있는지 확인
+    if os.path.exists(TOKEN_FILE):
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, scopes)
+        except Exception:
+            os.remove(TOKEN_FILE)
+
+    # 2. 토큰이 없거나 만료된 경우
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            # 토큰 만료 시 자동 갱신
             try:
                 creds.refresh(Request())
-                st.session_state.credentials = creds
-                return build('drive', 'v3', credentials=creds)
-            except:
-                pass
+                with open(TOKEN_FILE, 'w') as token:
+                    token.write(creds.to_json())
+            except Exception:
+                creds = None
+        
+        if not creds:
+            # 완전히 새로 로그인해야 하는 경우
+            redirect_uri = "https://my-fishing.streamlit.app/"
+            flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
+            
+            auth_code = st.query_params.get("code")
+            if auth_code:
+                flow.fetch_token(code=auth_code)
+                creds = flow.credentials
+                # 중요: 리프레시 토큰을 포함하여 파일로 저장
+                with open(TOKEN_FILE, 'w') as token:
+                    token.write(creds.to_json())
+                st.query_params.clear()
+                st.rerun()
+            else:
+                # 로그인 버튼 표시 (offline 모드로 리프레시 토큰 강제 획득)
+                auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+                st.info("💡 최초 1회 구글 인증이 필요합니다. 이후에는 자동으로 로그인됩니다.")
+                st.link_button("🔑 구글 로그인 및 자동 로그인 등록", auth_url)
+                return None
 
-    # 2. 새로 인증 받아야 하는 경우
-    redirect_uri = "https://my-fishing.streamlit.app/"
-    flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
+    return build('drive', 'v3', credentials=creds)
 
-    auth_code = st.query_params.get("code")
-    if auth_code:
-        try:
-            flow.fetch_token(code=auth_code)
-            st.session_state.credentials = flow.credentials
-            st.query_params.clear() # 주소창 정리
-            st.rerun() # 앱 재실행하여 로그인 상태 적용
-        except Exception as e:
-            st.error(f"인증 실패: {e}")
-            return None
-    else:
-        # 로그인 버튼 표시 (access_type='offline'으로 설정해야 자동 갱신 토큰이 발급됨)
-        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
-        st.info("💡 안전한 사진 저장을 위해 구글 계정 인증이 필요합니다.")
-        st.link_button("🔑 구글 로그인 (한 번만 인증)", auth_url)
-        return None
-
-# --- 이미지 최적화 및 업로드 로직 ---
+# --- 이미지 최적화 및 업로드 ---
 def optimize_image(uploaded_file):
     img = Image.open(uploaded_file).convert("RGB")
     img.thumbnail((2000, 2000), Image.LANCZOS)
@@ -75,10 +87,10 @@ def upload_to_drive(service, optimized_file, filename):
         uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         return uploaded_file.get('id')
     except Exception as e:
-        st.error(f"업로드 실패: {e}")
+        st.error(f"전송 실패: {e}")
         return None
 
-# 3. 메인 프로세스
+# 3. 메인 실행
 service = get_drive_service()
 
 if service:
@@ -107,7 +119,7 @@ if service:
             if not fish_type:
                 st.error("어종을 입력해주세요.")
             else:
-                with st.spinner("이미지 처리 및 전송 중..."):
+                with st.spinner("5TB 드라이브로 전송 중..."):
                     drive_ids = []
                     for idx, f in enumerate(files):
                         opt_f = optimize_image(f)
@@ -126,5 +138,5 @@ if service:
                             df = pd.concat([df, new_data], ignore_index=True)
                         except: df = new_data
                         df.to_csv("fishing_data.csv", index=False)
-                        st.success("상민님 계정으로 안전하게 저장되었습니다!")
+                        st.success("성공적으로 저장되었습니다!")
                         st.balloons()
