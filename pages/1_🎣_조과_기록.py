@@ -36,40 +36,26 @@ def get_drive_service():
         st.error(f"구글 인증 오류: {e}")
         return None
 
-# --- 이미지 최적화 (Quota 에러 회피를 위해 용량을 극소화) ---
+# --- 이미지 최적화 (가벼운 압축) ---
 def optimize_image(uploaded_file):
     img = Image.open(uploaded_file)
-    # 이미지 회전 방지 (EXIF 반영)
-    try:
-        if hasattr(img, '_getexif'):
-            from PIL import ExifTags
-            exif = img._getexif()
-            if exif:
-                orientation = next((k for k, v in ExifTags.TAGS.items() if v == 'Orientation'), None)
-                if orientation in exif:
-                    if exif[orientation] == 3: img = img.rotate(180, expand=True)
-                    elif exif[orientation] == 6: img = img.rotate(270, expand=True)
-                    elif exif[orientation] == 8: img = img.rotate(90, expand=True)
-    except: pass
-
     img = img.convert("RGB")
-    # 해상도를 1280px로 조정 (모바일 확인용으로 충분하며 용량이 작음)
-    img.thumbnail((1280, 1280), Image.LANCZOS)
+    img.thumbnail((1600, 1600), Image.LANCZOS)
     
     out = io.BytesIO()
-    # 품질 70% 및 최적화 옵션으로 용량을 수백 KB 이내로 강제 축소
-    img.save(out, format="JPEG", quality=70, optimize=True)
+    img.save(out, format="JPEG", quality=85, optimize=True)
     out.seek(0)
     return out
 
-# --- 구글 드라이브 업로드 및 권한 부여 함수 ---
+# --- 구글 드라이브 업로드 (소유권 이전 로직 포함) ---
 def upload_to_drive(optimized_file, filename):
     service = get_drive_service()
     if not service: return None
     
     folder_id = st.secrets["google_drive"]["folder_id"]
-    USER_EMAIL = "sangminan1204@gmail.com" # 사용자님의 이메일 적용
+    USER_EMAIL = "sangminan1204@gmail.com"
     
+    # [중요] metadata에 소유권 관련 설정을 포함할 수 없으므로 생성 후 권한 변경 방식을 씁니다.
     file_metadata = {
         'name': filename,
         'parents': [folder_id]
@@ -78,42 +64,52 @@ def upload_to_drive(optimized_file, filename):
     media = MediaIoBaseUpload(optimized_file, mimetype='image/jpeg', resumable=False)
     
     try:
-        # 1. 파일 생성 시도
+        # 1. 파일 생성 시도 (supportsAllDrives=True 필수)
         uploaded_file = service.files().create(
             body=file_metadata, 
             media_body=media, 
             fields='id',
-            supportsAllDrives=True
+            supportsAllDrives=True 
         ).execute()
         
         file_id = uploaded_file.get('id')
         
-        # 2. 업로드 직후 사용자 계정(sangminan1204@gmail.com)에 편집 권한 부여
-        # 이를 통해 소유권 분쟁으로 인한 할당량 문제를 완화합니다.
+        # 2. [에러 해결의 핵심] 사용자 계정(sangminan1204)을 파일의 'owner'로 변경 시도
+        # 개인 계정 간 소유권 이전은 'transferOwnership=True' 옵션이 필요합니다.
         permission = {
             'type': 'user',
-            'role': 'writer',
+            'role': 'owner',  # 편집자(writer)가 아닌 소유자(owner)로 지정
             'emailAddress': USER_EMAIL
         }
-        service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
+        
+        # 소유권 이전 실행
+        service.permissions().create(
+            fileId=file_id, 
+            body=permission, 
+            transferOwnership=True, # 소유권 강제 이전
+            supportsAllDrives=True
+        ).execute()
         
         return file_id
         
     except Exception as e:
-        # 여전히 Quota 에러가 난다면 상세 내용을 화면에 표시
-        st.error(f"구글 드라이브 전송 실패: {e}")
-        return None
+        # 만약 owner 이전이 막힌다면 writer 권한이라도 부여하여 쿼터를 확보합니다.
+        try:
+            permission_writer = {'type': 'user', 'role': 'writer', 'emailAddress': USER_EMAIL}
+            service.permissions().create(fileId=file_id, body=permission_writer, supportsAllDrives=True).execute()
+            return file_id
+        except:
+            st.error(f"구글 드라이브 할당량 에러 우회 실패: {e}")
+            return None
 
-# 기초 데이터 로드
+# 데이터 로드
 try:
-    point_df = pd.read_csv("points.csv")
-    point_list = point_df["포인트명"].tolist() if not point_df.empty else []
-    gear_df = pd.read_csv("gears.csv")
-    gear_list = gear_df["장비명"].tolist() if not gear_df.empty else []
+    point_list = pd.read_csv("points.csv")["포인트명"].tolist()
+    gear_list = pd.read_csv("gears.csv")["장비명"].tolist()
 except:
     point_list, gear_list = [], []
 
-# 조과 기록 폼
+# 폼 구성
 with st.form("fishing_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -127,13 +123,13 @@ with st.form("fishing_form", clear_on_submit=True):
         gear = st.selectbox("🎣 장비", gear_list) if gear_list else st.text_input("🎣 장비 입력")
         memo = st.text_area("💬 메모")
     
-    files = st.file_uploader("📸 사진 업로드 (최대 10개)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+    files = st.file_uploader("📸 사진 업로드", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
     
     if st.form_submit_button("저장하기 🚀"):
         if not fish_type:
             st.error("어종을 입력해주세요.")
         else:
-            with st.spinner("이미지 최적화 및 구글 드라이브 전송 중..."):
+            with st.spinner("구글 드라이브 전송 중..."):
                 drive_ids = []
                 upload_success = True
                 
@@ -150,25 +146,14 @@ with st.form("fishing_form", clear_on_submit=True):
                 
                 if upload_success:
                     new_data = pd.DataFrame([{
-                        "날짜": date.strftime("%Y-%m-%d"),
-                        "포인트": point,
-                        "어종": fish_type,
-                        "마릿수": count,
-                        "길이": length,
-                        "무게": weight,
-                        "사용장비": gear,
-                        "메모": memo,
-                        "사진": "|".join(drive_ids)
+                        "날짜": date.strftime("%Y-%m-%d"), "포인트": point, "어종": fish_type, 
+                        "마릿수": count, "길이": length, "무게": weight, 
+                        "사용장비": gear, "메모": memo, "사진": "|".join(drive_ids)
                     }])
-                    
                     try:
                         df = pd.read_csv("fishing_data.csv")
                         df = pd.concat([df, new_data], ignore_index=True)
-                    except:
-                        df = new_data
-                    
+                    except: df = new_data
                     df.to_csv("fishing_data.csv", index=False)
-                    st.success("기록이 성공적으로 저장되었습니다!")
+                    st.success("기록 완료!")
                     st.balloons()
-                else:
-                    st.error("사진 업로드 중 할당량 문제가 발생했습니다. 이미지 크기를 더 줄여 시도하거나 설정을 점검하세요.")
