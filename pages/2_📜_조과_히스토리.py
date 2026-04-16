@@ -1,63 +1,66 @@
 import streamlit as st
+import os
 import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import io
 
-st.set_page_config(page_title="낚's - 히스토리", layout="wide")
-st.markdown("""<style>[data-testid="stSidebar"] {display: none;} [data-testid="stSidebarCollapseButton"] {display: none;}</style>""", unsafe_allow_html=True)
+# 페이지 설정
+st.set_page_config(page_title="낚's - HOME", layout="centered")
 
-if st.button("🏠 HOME으로 가기"): st.switch_page("app.py")
+# --- 사이드바 제거 및 스타일 설정 ---
+st.markdown("""
+    <style>
+    [data-testid="stSidebar"] { display: none; }
+    [data-testid="stSidebarCollapseButton"] { display: none; }
+    .stButton>button { width: 100%; height: 60px; font-size: 20px; margin-bottom: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 구글 드라이브 용량 정보 가져오기 함수 ---
+def get_drive_storage_info():
+    try:
+        info = st.secrets["gcp_service_account"]
+        creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive.metadata.readonly"])
+        service = build('drive', 'v3', credentials=creds)
+        
+        # 드라이브 전체 용량 정보 쿼리
+        about = service.about().get(fields="storageQuota").execute()
+        quota = about.get("storageQuota", {})
+        
+        limit = int(quota.get("limit", 15 * 1024**3)) / (1024**3) # GB 단위
+        usage = int(quota.get("usage", 0)) / (1024**3)           # GB 단위
+        percent = min(usage / limit, 1.0)
+        
+        return usage, limit, percent
+    except:
+        return 0, 15, 0
+
+st.title("🎣 낚's")
+st.subheader("나만의 스마트 조과 수첩 (Google Drive 연동)")
 st.markdown("---")
-st.title("📜 조과 히스토리")
 
-# --- 구글 드라이브 인증 및 사진 다운로드 함수 ---
-def get_drive_service():
-    info = st.secrets["gcp_service_account"]
-    creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/drive"])
-    return build('drive', 'v3', credentials=creds)
+# --- 용량 게이지 표시 ---
+st.write("☁️ **구글 드라이브 저장 공간 (15GB 무료)**")
+used_gb, total_gb, per = get_drive_storage_info()
 
-def download_from_drive(file_id):
-    service = get_drive_service()
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = request.execute()
-    return downloader
+st.progress(per)
+st.write(f"📊 {used_gb:.2f} GB / {total_gb:.1f} GB ({per*100:.1f}%)")
 
-try:
-    df = pd.read_csv("fishing_data.csv")
-    if df.empty:
-        st.info("기록이 없습니다.")
-    else:
-        df = df.sort_values(by="날짜", ascending=False)
-        for i, row in df.iterrows():
-            with st.container():
-                st.markdown("---")
-                c1, c2, c3 = st.columns([1.5, 2, 1])
-                
-                with c1:
-                    if isinstance(row['사진'], str) and row['사진']:
-                        first_img_id = row['사진'].split("|")[0]
-                        try:
-                            # 구글 드라이브 썸네일 링크 활용 (빠른 로딩)
-                            # webContentLink를 직접 쓰기보다 가벼운 뷰어 주소 활용
-                            img_url = f"https://drive.google.com/thumbnail?id={first_img_id}&sz=w800"
-                            st.image(img_url, use_container_width=True)
-                        except:
-                            st.write("이미지를 불러올 수 없습니다.")
-                    else:
-                        st.write("📷 사진 없음")
-                
-                with c2:
-                    st.subheader(f"{row['날짜']} | {row['어종']}")
-                    st.write(f"📍 {row['포인트']} | 📏 {row['길이']}cm | 🔢 {row['마릿수']}마리")
-                    st.info(f"💬 {row['메모']}")
-                
-                with c3:
-                    if st.button("🗑️ 삭제", key=f"del_{i}"):
-                        # (참고) 실제 구글 드라이브의 파일도 삭제하려면 추가 코드가 필요하지만, 
-                        # 우선 데이터베이스(CSV)에서만 삭제하도록 구현했습니다.
-                        df.drop(i).to_csv("fishing_data.csv", index=False)
-                        st.rerun()
-except:
-    st.info("데이터를 불러오는 중 오류가 발생했거나 파일이 없습니다.")
+if per > 0.9:
+    st.warning("⚠️ 구글 드라이브 용량이 거의 가득 찼습니다!")
+
+st.markdown("---")
+
+# --- 메뉴 이동 버튼 ---
+st.write("🚀 **메뉴 선택**")
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("🗺️ 지도 보기"): st.switch_page("pages/0_🗺️_지도.py")
+    if st.button("🎣 조과 기록"): st.switch_page("pages/1_🎣_조과_기록.py")
+
+with col2:
+    if st.button("📜 히스토리"): st.switch_page("pages/2_📜_조과_히스토리.py")
+    if st.button("📊 데이터 분석"): st.switch_page("pages/3_📊_분석.py")
+
+if st.button("🛠️ 장비 및 설정 관리"): st.switch_page("pages/4_🛠️_장비.py")
