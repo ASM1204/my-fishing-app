@@ -4,7 +4,7 @@ import pandas as pd
 
 st.set_page_config(page_title="낚's - HOME", layout="centered")
 
-# --- 스타일 설정 (버튼 디자인 등) ---
+# --- 스타일 설정 ---
 st.markdown("""
     <style>
     .stButton>button {
@@ -35,9 +35,10 @@ def get_storage_info(file_path, total_capacity_mb=50.0):
 st.write("📂 **데이터 저장소 사용량**")
 used, total, per = get_storage_info("fishing_data.csv")
 
-# 게이지 바 (사용량에 따라 색상 변경 느낌 제공)
+# 게이지 바
 st.progress(per)
-st.write(f"📊 {used:.2f} MB / {total:.1f} MB ({per*100:.1True}%)")
+# 아래 줄의 오타(.1True -> .1f)를 수정했습니다.
+st.write(f"📊 {used:.2f} MB / {total:.1f} MB ({per*100:.1f}%)")
 
 if per > 0.8:
     st.warning("⚠️ 저장 공간이 얼마 남지 않았습니다. 사진 관리가 필요합니다.")
