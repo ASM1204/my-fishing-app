@@ -3,140 +3,135 @@ import pandas as pd
 import datetime
 import json
 import io
-import os
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from PIL import Image
 
-# 1. 페이지 설정
+# 1. 페이지 기본 설정
 st.set_page_config(page_title="낚's - 조과 기록", layout="centered")
 st.markdown("""<style>[data-testid="stSidebar"] {display: none;} [data-testid="stSidebarCollapseButton"] {display: none;}</style>""", unsafe_allow_html=True)
 
 if st.button("🏠 HOME으로 가기"): 
     st.switch_page("app.py")
 
-st.title("🎣 조과 기록 (영구 로그인 모드)")
+st.markdown("---")
+st.title("🎣 조과 기록")
 
-# 토큰 저장 파일 경로
-TOKEN_FILE = 'token.json'
-
-# --- 영구 로그인 인증 로직 ---
+# --- 구글 인증 및 서비스 생성 함수 ---
 def get_drive_service():
+    # Secrets에서 설정값 불러오기
     client_config = json.loads(st.secrets["google_oauth"]["client_secrets_json"])
     scopes = ['https://www.googleapis.com/auth/drive.file']
-    creds = None
+    # 배포된 앱의 실제 리디렉션 주소 (JSON 파일 내의 주소와 일치해야 함)
+    redirect_uri = "https://my-fishing.streamlit.app/" 
 
-    # 1. 파일에 저장된 기존 토큰이 있는지 확인
-    if os.path.exists(TOKEN_FILE):
+    flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
+
+    # URL 파라미터에서 인증 코드 추출
+    auth_code = st.query_params.get("code")
+
+    # 세션에 인증 정보가 없고, URL에도 코드가 없다면 로그인 버튼 표시
+    if 'creds' not in st.session_state and not auth_code:
+        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+        st.warning("⚠️ 사진 저장을 위해 구글 계정 인증이 필요합니다.")
+        st.link_button("🔑 구글 로그인 (5TB 권한 사용)", auth_url)
+        return None
+
+    # URL에 코드가 들어왔다면 세션에 저장 (인증 처리)
+    if auth_code and 'creds' not in st.session_state:
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, scopes)
-        except Exception:
-            os.remove(TOKEN_FILE)
+            flow.fetch_token(code=auth_code)
+            st.session_state.creds = flow.credentials
+            st.query_params.clear() # 주소창 코드 제거
+            st.rerun() # 즉시 재실행하여 기록창 띄우기
+        except Exception as e:
+            st.error(f"인증 처리 중 오류 발생: {e}")
+            st.query_params.clear()
+            return None
 
-    # 2. 토큰이 없거나 만료된 경우
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            # 토큰 만료 시 자동 갱신
-            try:
-                creds.refresh(Request())
-                with open(TOKEN_FILE, 'w') as token:
-                    token.write(creds.to_json())
-            except Exception:
-                creds = None
-        
-        if not creds:
-            # 완전히 새로 로그인해야 하는 경우
-            redirect_uri = "https://my-fishing.streamlit.app/"
-            flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
-            
-            auth_code = st.query_params.get("code")
-            if auth_code:
-                flow.fetch_token(code=auth_code)
-                creds = flow.credentials
-                # 중요: 리프레시 토큰을 포함하여 파일로 저장
-                with open(TOKEN_FILE, 'w') as token:
-                    token.write(creds.to_json())
-                st.query_params.clear()
-                st.rerun()
-            else:
-                # 로그인 버튼 표시 (offline 모드로 리프레시 토큰 강제 획득)
-                auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
-                st.info("💡 최초 1회 구글 인증이 필요합니다. 이후에는 자동으로 로그인됩니다.")
-                st.link_button("🔑 구글 로그인 및 자동 로그인 등록", auth_url)
-                return None
+    # 인증 정보가 세션에 있다면 서비스 객체 생성
+    if 'creds' in st.session_state:
+        return build('drive', 'v3', credentials=st.session_state.creds)
+    
+    return None
 
-    return build('drive', 'v3', credentials=creds)
+# --- 이미지 처리 함수 ---
+def process_photo(file):
+    img = Image.open(file).convert("RGB")
+    img.thumbnail((1600, 1600), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    buf.seek(0)
+    return buf
 
-# --- 이미지 최적화 및 업로드 ---
-def optimize_image(uploaded_file):
-    img = Image.open(uploaded_file).convert("RGB")
-    img.thumbnail((2000, 2000), Image.LANCZOS)
-    out = io.BytesIO()
-    img.save(out, format="JPEG", quality=85, optimize=True)
-    out.seek(0)
-    return out
-
-def upload_to_drive(service, optimized_file, filename):
+# --- 드라이브 업로드 함수 ---
+def upload_file(service, buf, filename):
     folder_id = st.secrets["google_drive"]["folder_id"]
-    file_metadata = {'name': filename, 'parents': [folder_id]}
-    media = MediaIoBaseUpload(optimized_file, mimetype='image/jpeg', resumable=False)
+    meta = {'name': filename, 'parents': [folder_id]}
+    media = MediaIoBaseUpload(buf, mimetype='image/jpeg')
     try:
-        uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        return uploaded_file.get('id')
+        res = service.files().create(body=meta, media_body=media, fields='id').execute()
+        return res.get('id')
     except Exception as e:
         st.error(f"전송 실패: {e}")
         return None
 
-# 3. 메인 실행
+# --- 메인 실행 로직 ---
 service = get_drive_service()
 
+# 서비스가 확보되면(인증 완료 시) 바로 기록 창을 띄웁니다.
 if service:
+    st.success("✅ 구글 드라이브 연결됨 (상민님 계정)")
+    
+    # 기초 데이터 로드
     try:
-        point_list = pd.read_csv("points.csv")["포인트명"].tolist()
-        gear_list = pd.read_csv("gears.csv")["장비명"].tolist()
+        p_list = pd.read_csv("points.csv")["포인트명"].tolist()
+        g_list = pd.read_csv("gears.csv")["장비명"].tolist()
     except:
-        point_list, gear_list = [], []
+        p_list, g_list = [], []
 
-    with st.form("fishing_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
+    # [조과 기록 폼 구현]
+    with st.form("record_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
             date = st.date_input("📅 날짜", datetime.date.today())
-            point = st.selectbox("📍 포인트", point_list) if point_list else st.text_input("📍 포인트 직접 입력")
-            fish_type = st.text_input("🐟 어종")
-            count = st.number_input("🔢 마릿수", min_value=1, step=1)
-        with col2:
+            point = st.selectbox("📍 포인트", p_list) if p_list else st.text_input("📍 포인트 직접 입력")
+            fish = st.text_input("🐟 어종")
+            cnt = st.number_input("🔢 마릿수", min_value=1, step=1)
+        with c2:
             length = st.number_input("📏 길이(cm)", min_value=0.0)
             weight = st.number_input("⚖️ 무게(kg)", min_value=0.0)
-            gear = st.selectbox("🎣 장비", gear_list) if gear_list else st.text_input("🎣 장비 입력")
+            gear = st.selectbox("🎣 장비", g_list) if g_list else st.text_input("🎣 장비 입력")
             memo = st.text_area("💬 메모")
         
-        files = st.file_uploader("📸 사진 업로드", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+        up_files = st.file_uploader("📸 사진 업로드", type=['jpg','jpeg','png'], accept_multiple_files=True)
         
-        if st.form_submit_button("저장하기 🚀"):
-            if not fish_type:
+        if st.form_submit_button("기록 저장하기 🚀"):
+            if not fish:
                 st.error("어종을 입력해주세요.")
             else:
-                with st.spinner("5TB 드라이브로 전송 중..."):
-                    drive_ids = []
-                    for idx, f in enumerate(files):
-                        opt_f = optimize_image(f)
-                        fname = f"{date.strftime('%Y%m%d')}_{fish_type}_{idx}.jpg"
-                        fid = upload_to_drive(service, opt_f, fname)
-                        if fid: drive_ids.append(fid)
+                with st.spinner("구글 드라이브에 사진 저장 중..."):
+                    photo_ids = []
+                    for i, f in enumerate(up_files):
+                        p_buf = process_photo(f)
+                        fname = f"{date}_{fish}_{i}.jpg"
+                        pid = upload_file(service, p_buf, fname)
+                        if pid: photo_ids.append(pid)
                     
-                    if not files or len(drive_ids) == len(files):
-                        new_data = pd.DataFrame([{
-                            "날짜": date.strftime("%Y-%m-%d"), "포인트": point, "어종": fish_type, 
-                            "마릿수": count, "길이": length, "무게": weight, 
-                            "사용장비": gear, "메모": memo, "사진": "|".join(drive_ids)
-                        }])
-                        try:
-                            df = pd.read_csv("fishing_data.csv")
-                            df = pd.concat([df, new_data], ignore_index=True)
-                        except: df = new_data
-                        df.to_csv("fishing_data.csv", index=False)
-                        st.success("성공적으로 저장되었습니다!")
-                        st.balloons()
+                    # CSV 데이터 저장
+                    new_row = pd.DataFrame([{
+                        "날짜": date.strftime("%Y-%m-%d"), "포인트": point, "어종": fish,
+                        "마릿수": cnt, "길이": length, "무게": weight,
+                        "사용장비": gear, "메모": memo, "사진": "|".join(photo_ids)
+                    }])
+                    
+                    try:
+                        df = pd.read_csv("fishing_data.csv")
+                        df = pd.concat([df, new_row], ignore_index=True)
+                    except:
+                        df = new_row
+                    
+                    df.to_csv("fishing_data.csv", index=False)
+                    st.success("기록이 성공적으로 저장되었습니다!")
+                    st.balloons()
