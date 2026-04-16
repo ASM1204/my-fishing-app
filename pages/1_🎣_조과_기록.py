@@ -6,49 +6,59 @@ import io
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+from google.auth.transport.requests import Request
 from PIL import Image
 
-# 1. 페이지 설정 및 스타일
+# 1. 페이지 설정
 st.set_page_config(page_title="낚's - 조과 기록", layout="centered")
 st.markdown("""<style>[data-testid="stSidebar"] {display: none;} [data-testid="stSidebarCollapseButton"] {display: none;}</style>""", unsafe_allow_html=True)
 
 if st.button("🏠 HOME으로 가기"): 
     st.switch_page("app.py")
 
-st.markdown("---")
-st.title("🎣 조과 기록 (개인 5TB 모드)")
+st.title("🎣 조과 기록 (자동 로그인 유지)")
 
-# --- OAuth 2.0 인증 로직 ---
+# --- 자동 로그인 유지 로직 ---
 def get_drive_service():
-    # 1. Secrets에서 설정 로드
     client_config = json.loads(st.secrets["google_oauth"]["client_secrets_json"])
     scopes = ['https://www.googleapis.com/auth/drive.file']
     
-    # 배포 환경에 따른 리디렉션 URI 설정
-    redirect_uri = "https://my-fishing.streamlit.app/" if not st.sidebar.checkbox("로컬 테스트용", value=False) else "http://localhost:8501"
+    # 1. 세션에 이미 인증 정보가 있는지 확인
+    if 'credentials' in st.session_state:
+        creds = st.session_state.credentials
+        if creds.valid:
+            return build('drive', 'v3', credentials=creds)
+        # 만료되었으면 갱신 시도
+        if creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                st.session_state.credentials = creds
+                return build('drive', 'v3', credentials=creds)
+            except:
+                pass
 
+    # 2. 새로 인증 받아야 하는 경우
+    redirect_uri = "https://my-fishing.streamlit.app/"
     flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
 
-    # 2. URL 파라미터에서 인증 코드 확인
     auth_code = st.query_params.get("code")
-    
     if auth_code:
         try:
             flow.fetch_token(code=auth_code)
-            creds = flow.credentials
-            return build('drive', 'v3', credentials=creds)
+            st.session_state.credentials = flow.credentials
+            st.query_params.clear() # 주소창 정리
+            st.rerun() # 앱 재실행하여 로그인 상태 적용
         except Exception as e:
-            st.error(f"인증 토큰 획득 실패: {e}")
-            st.query_params.clear() # 에러 시 파라미터 초기화
+            st.error(f"인증 실패: {e}")
             return None
     else:
-        # 3. 인증 전이면 로그인 버튼 표시
-        auth_url, _ = flow.authorization_url(prompt='consent')
-        st.warning("⚠️ 사진 업로드를 위해 구글 계정 인증이 필요합니다.")
-        st.link_button("🔑 구글 로그인 (5TB 권한 사용)", auth_url)
+        # 로그인 버튼 표시 (access_type='offline'으로 설정해야 자동 갱신 토큰이 발급됨)
+        auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+        st.info("💡 안전한 사진 저장을 위해 구글 계정 인증이 필요합니다.")
+        st.link_button("🔑 구글 로그인 (한 번만 인증)", auth_url)
         return None
 
-# --- 이미지 최적화 ---
+# --- 이미지 최적화 및 업로드 로직 ---
 def optimize_image(uploaded_file):
     img = Image.open(uploaded_file).convert("RGB")
     img.thumbnail((2000, 2000), Image.LANCZOS)
@@ -57,12 +67,10 @@ def optimize_image(uploaded_file):
     out.seek(0)
     return out
 
-# --- 구글 드라이브 업로드 함수 ---
 def upload_to_drive(service, optimized_file, filename):
     folder_id = st.secrets["google_drive"]["folder_id"]
     file_metadata = {'name': filename, 'parents': [folder_id]}
     media = MediaIoBaseUpload(optimized_file, mimetype='image/jpeg', resumable=False)
-    
     try:
         uploaded_file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         return uploaded_file.get('id')
@@ -70,11 +78,10 @@ def upload_to_drive(service, optimized_file, filename):
         st.error(f"업로드 실패: {e}")
         return None
 
-# 메인 로직 시작
+# 3. 메인 프로세스
 service = get_drive_service()
 
 if service:
-    # 기초 데이터 로드
     try:
         point_list = pd.read_csv("points.csv")["포인트명"].tolist()
         gear_list = pd.read_csv("gears.csv")["장비명"].tolist()
@@ -100,7 +107,7 @@ if service:
             if not fish_type:
                 st.error("어종을 입력해주세요.")
             else:
-                with st.spinner("이미지 최적화 및 업로드 중..."):
+                with st.spinner("이미지 처리 및 전송 중..."):
                     drive_ids = []
                     for idx, f in enumerate(files):
                         opt_f = optimize_image(f)
