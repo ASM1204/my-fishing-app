@@ -3,6 +3,11 @@ from streamlit_echarts import st_echarts
 import pandas as pd
 
 st.set_page_config(page_title="낚's - 지도", layout="centered")
+st.markdown("""<style>[data-testid="stSidebar"] {display: none;} [data-testid="stSidebarCollapseButton"] {display: none;}</style>""", unsafe_allow_html=True)
+
+# 상단 홈 버튼
+if st.button("🏠 HOME으로 가기"): st.switch_page("app.py")
+st.markdown("---")
 
 st.title("🗺️ 낚's 지도")
 
@@ -11,9 +16,7 @@ def load_data(file_name):
     except: return pd.DataFrame()
 
 points_df = load_data("points.csv")
-
-if 'selected_region' not in st.session_state:
-    st.session_state.selected_region = "전국"
+if 'selected_region' not in st.session_state: st.session_state.selected_region = "전국"
 
 if st.session_state.selected_region == "전국":
     st.subheader("📍 지역을 선택하세요")
@@ -45,16 +48,11 @@ else:
     if st.button("⬅️ 전국 지도로 돌아가기"):
         st.session_state.selected_region = "전국"
         st.rerun()
-    
     st.markdown("---")
     if not points_df.empty:
         short_name = st.session_state.selected_region[:2]
         local_points = points_df[points_df['지역'].str.contains(short_name, na=False)]
         if not local_points.empty:
-            for _, p_row in local_points.iterrows():
-                st.info(f"📍 {p_row['포인트명']}")
+            for _, p_row in local_points.iterrows(): st.info(f"📍 {p_row['포인트명']}")
         else: st.write("등록된 포인트가 없습니다.")
     else: st.info("'🛠️ 장비' 메뉴에서 포인트를 등록해주세요.")
-
-if st.button("🏠 HOME으로 이동"):
-    st.switch_page("app.py")
