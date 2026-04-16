@@ -36,10 +36,10 @@ def get_drive_service():
         st.error(f"구글 인증 오류: {e}")
         return None
 
-# --- 이미지 최적화 (Quota 에러 및 성능 방어용) ---
+# --- 이미지 최적화 (용량 다이어트 및 EXIF 회전 방지) ---
 def optimize_image(uploaded_file):
     img = Image.open(uploaded_file)
-    # 이미지 회전 방지
+    # 이미지 회전 방지 로직
     try:
         if hasattr(img, '_getexif'):
             from PIL import ExifTags
@@ -53,7 +53,7 @@ def optimize_image(uploaded_file):
     except: pass
 
     img = img.convert("RGB")
-    # 고해상도 유지 (너비 2000px)
+    # 고해상도 유지 (너비 2000px 기준)
     img.thumbnail((2000, 2000), Image.LANCZOS)
     
     out = io.BytesIO()
@@ -61,7 +61,7 @@ def optimize_image(uploaded_file):
     out.seek(0)
     return out
 
-# --- 구글 드라이브 업로드 함수 ---
+# --- 구글 드라이브 업로드 함수 (오류 인자 수정 완료) ---
 def upload_to_drive(optimized_file, filename):
     service = get_drive_service()
     if not service: return None
@@ -73,21 +73,21 @@ def upload_to_drive(optimized_file, filename):
         'parents': [folder_id]
     }
     
-    # resumable=False가 할당량 에러 상황에서 더 안정적으로 작동합니다.
+    # 미디어 업로드 설정 (resumable=False로 안정성 확보)
     media = MediaIoBaseUpload(optimized_file, mimetype='image/jpeg', resumable=False)
     
     try:
-        # supportsAllDrives=True 옵션이 공유 드라이브 사용 시 핵심입니다.
+        # 오류를 일으켰던 includeItemsFromAllDrives 인자를 제거하고
+        # 공유 드라이브를 지원하는 supportsAllDrives만 유지합니다.
         uploaded_file = service.files().create(
             body=file_metadata, 
             media_body=media, 
             fields='id',
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
+            supportsAllDrives=True  # 공유 드라이브 내 업로드를 위해 필수
         ).execute()
         return uploaded_file.get('id')
     except Exception as e:
-        st.error(f"구글 드라이브 업로드 실패: {e}")
+        st.error(f"구글 드라이브 업로드 중 오류 발생: {e}")
         return None
 
 # 기초 데이터 로드 (포인트, 장비)
@@ -99,7 +99,7 @@ try:
 except:
     point_list, gear_list = [], []
 
-# 입력 폼
+# 조과 기록 폼
 with st.form("fishing_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -113,7 +113,7 @@ with st.form("fishing_form", clear_on_submit=True):
         gear = st.selectbox("🎣 장비", gear_list) if gear_list else st.text_input("🎣 장비 입력")
         memo = st.text_area("💬 메모")
     
-    files = st.file_uploader("📸 사진 업로드 (공유 드라이브 전송)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+    files = st.file_uploader("📸 사진 업로드 (구글 드라이브 전송)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
     
     if st.form_submit_button("저장하기 🚀"):
         if not fish_type:
@@ -121,15 +121,21 @@ with st.form("fishing_form", clear_on_submit=True):
         else:
             with st.spinner("이미지 최적화 및 구글 드라이브 업로드 중..."):
                 drive_ids = []
-                for idx, f in enumerate(files):
-                    optimized_f = optimize_image(f)
-                    fname = f"{date.strftime('%Y%m%d')}_{fish_type}_{idx}.jpg"
-                    fid = upload_to_drive(optimized_f, fname)
-                    if fid:
-                        drive_ids.append(fid)
+                upload_success = True
                 
-                # 사진 업로드에 모두 성공했거나 사진이 없는 경우에만 CSV 기록
-                if not files or len(drive_ids) == len(files):
+                if files:
+                    for idx, f in enumerate(files):
+                        optimized_f = optimize_image(f)
+                        fname = f"{date.strftime('%Y%m%d')}_{fish_type}_{idx}.jpg"
+                        fid = upload_to_drive(optimized_f, fname)
+                        if fid:
+                            drive_ids.append(fid)
+                        else:
+                            upload_success = False
+                            break
+                
+                # 업로드에 모두 성공했거나 사진이 없는 경우에만 CSV에 기록 저장
+                if upload_success:
                     new_data = pd.DataFrame([{
                         "날짜": date.strftime("%Y-%m-%d"),
                         "포인트": point,
@@ -149,7 +155,7 @@ with st.form("fishing_form", clear_on_submit=True):
                         df = new_data
                     
                     df.to_csv("fishing_data.csv", index=False)
-                    st.success("원본 사진 저장 및 기록 완료!")
+                    st.success("원본 사진 저장 및 기록이 완료되었습니다!")
                     st.balloons()
                 else:
-                    st.error("사진 업로드 중 일부 실패가 발생하여 기록이 저장되지 않았습니다.")
+                    st.error("사진 업로드 중 오류가 발생하여 기록이 저장되지 않았습니다. 권한 설정을 확인해 주세요.")
